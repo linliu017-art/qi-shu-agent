@@ -1,0 +1,45 @@
+{
+  "prd": {
+    "source_skill": "product-prd",
+    "imported_at": "2026-10-30",
+    "references": {
+      "prd-template.md": {
+        "path": "prd/prd-template.md",
+        "source_file": "references/prd-template.md",
+        "sha256": "54505a227ff011ed3a51bf00f1eb1796d5b30bf8e757797eda1e75cd5e86bd59"
+      },
+      "ai-product.md": {
+        "path": "prd/ai-product.md",
+        "source_file": "references/ai-product.md",
+        "sha256": "8b932d872224afe5ff6d4859ba4b2704bc5f80117fc2738c403920d91c2d7dd9"
+      }
+    }
+  },
+  "initiation": {
+    "source_skill": "ai-project-initiation",
+    "imported_at": "2026-10-30",
+    "references": {
+      "report-template.md": {
+        "path": "initiation/report-template.md",
+        "source_file": "report-template.md",
+        "sha256": "754c7af34af69706a4172d2da9ee0cf61afc6dfbe3baaa1a5b9de2144e0f157b"
+      },
+      "writing-rules.md": {
+        "path": "initiation/writing-rules.md",
+        "source_file": "writing-rules.md",
+        "sha256": "66f06a41439f5beb827e8fa87bd7cadb1242a34e309fe1ea922a838f1dec2a49"
+      }
+    }
+  },
+  "competitor": {
+    "source_skill": "product-teardown-standard",
+    "imported_at": "2026-10-30",
+    "references": {
+      "framework.md": {
+        "path": "competitor/framework.md",
+        "source_file": "references/framework.md",
+        "sha256": "29465547aefd0d20a3a934fb9123de9b0783d130d4aa1fc83ead233b3b0b3a1e"
+      }
+    }
+  }
+}

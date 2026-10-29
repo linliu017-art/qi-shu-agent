@@ -1,0 +1,12 @@
+"use client";
+import { useEffect, useState } from "react";
+type Version = {id:string;goal:string;created_at:string;parent_id:string|null};
+type Change = {kind:string;lines:string[]};
+export default function Versions({id,onSelect}:{id:string;onSelect:(id:string)=>void}) {
+ const [versions,setVersions]=useState<Version[]>([]), [base,setBase]=useState("");
+ const [changes,setChanges]=useState<Change[]|null>(null), [error,setError]=useState("");
+ const [busy,setBusy]=useState(false);
+ useEffect(()=>{const controller=new AbortController();fetch(`/api/v1/tasks/${id}/versions`,{signal:controller.signal}).then(async r=>{if(!r.ok)throw new Error("无法加载版本");setVersions((await r.json()).versions)}).catch(e=>{if(e.name!=="AbortError")setError(e.message)});return()=>controller.abort()},[id]);
+ async function action(restore:boolean){if(!base||busy)return;setBusy(true);setError("");try{const r=await fetch(`/api/v1/tasks/${id}/${restore?"restore":`diff?base_id=${encodeURIComponent(base)}`}`,restore?{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({source_id:base})}:{});const data=await r.json();if(!r.ok)throw new Error(data.error?.message||"操作失败");if(restore)onSelect(data.id);else setChanges(data.changes)}catch(e){setError(e instanceof Error?e.message:"连接失败")}finally{setBusy(false)}}
+ return <div className="versions"><h3>成果版本</h3><p className="note">共 {versions.length} 个版本。恢复会创建新版本，保留原稿，不调用模型。</p><label htmlFor="version">选择对比或恢复的版本</label><select id="version" value={base} onChange={e=>{setBase(e.target.value);setChanges(null)}}><option value="">请选择历史版本</option>{versions.map((v,i)=><option key={v.id} value={v.id}>版本 {i+1}{v.id===id?"（当前）":""} · {v.goal.slice(0,35)}</option>)}</select><div className="actions"><button className="secondary" disabled={!base||busy} onClick={()=>onSelect(base)}>查看版本</button><button className="secondary" disabled={!base||busy} onClick={()=>action(false)}>与当前对比</button><button className="secondary" disabled={!base||base===id||busy} onClick={()=>action(true)}>{busy?"处理中…":"恢复为新版本"}</button></div>{error&&<p role="alert" className="error">{error}</p>}{changes&&<div className="diff"><p>− 删除（旧版本）　+ 新增（当前版本）</p>{changes.every(c=>c.kind==="equal")?<p>两个版本内容相同。</p>:changes.map((c,i)=><div key={i} className={`diff-${c.kind}`}>{c.kind==="equal"?<details><summary>未改动的 {c.lines.length} 行</summary><pre>{c.lines.join("\n")}</pre></details>:<pre>{c.lines.map(line=>(c.kind==="insert"?"+ ":"− ")+line).join("\n")}</pre>}</div>)}</div>}</div>
+}
