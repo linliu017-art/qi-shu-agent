@@ -10,7 +10,7 @@ if lsof -nP -iTCP:$PORT -sTCP:LISTEN >/dev/null 2>&1; then echo '测试端口已
 start(){ (cd "$ROOT/backend" && exec env AGENT_DB_PATH="$TMPDIR_AGENT/data.sqlite" MODEL_API_KEY="" .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port "$PORT" > "$TMPDIR_AGENT/server.log" 2>&1) & PID=$!; for i in {1..50}; do if curl -fsS "http://127.0.0.1:$PORT/api/v1/health" >/dev/null 2>&1; then return 0; fi; sleep .1; done; echo '服务启动失败'; exit 1; }
 start
 echo '服务已启动'
-RESPONSE="$(curl -fsS -X POST "http://127.0.0.1:$PORT/api/v1/tasks" -H 'Content-Type: application/json' --data '{"goal":"restart-check-unique","material":"temporary"}')"
+RESPONSE="$(curl -fsS -X POST "http://127.0.0.1:$PORT/api/v1/tasks" -H 'Content-Type: application/json' --data '{"goal":"restart-check-unique","material":"temporary","client_request_id":"restart-key"}')"
 ID="$(printf '%s' "$RESPONSE" | "$ROOT/backend/.venv/bin/python" -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
 echo '已写入临时任务'
 (cd "$ROOT/backend" && AGENT_DB_PATH="$TMPDIR_AGENT/data.sqlite" .venv/bin/python - "$ID" <<'PYCODE'
@@ -60,6 +60,9 @@ from pathlib import Path
 from app import store
 with store.connection() as db:
     tid=Path(db.execute('PRAGMA database_list').fetchone()[2]).with_suffix('.version').read_text()
+retried, created = store.create_once('restart-check-unique', 'temporary', request_id='restart-key')
+assert not created and retried['status']=='interrupted'
+print('重启后相同提交标识找回原任务，没有创建或重新调度')
 assert store.get(tid)['result']=='版本恢复检查原文'
 assert len(store.versions(tid))==3
 assert store.context_link(tid)

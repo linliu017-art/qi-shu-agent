@@ -23,10 +23,11 @@ class TaskInput(BaseModel):
     goal: str = Field(min_length=1, max_length=10000)
     material: str = Field(default="", max_length=100000)
     source_ids: list[str] = Field(default_factory=list, max_length=10)
+    client_request_id: str | None = Field(default=None, min_length=1, max_length=64, pattern=r'^[A-Za-z0-9_-]+$')
 
 @app.exception_handler(HTTPException)
 async def http_error(request: Request, exc: HTTPException):
-    return JSONResponse(status_code=exc.status_code, content={"error": {"code": "NOT_FOUND" if exc.status_code == 404 else "BAD_REQUEST", "message": str(exc.detail)}})
+    return JSONResponse(status_code=exc.status_code, content={"error": {"code": {404: "NOT_FOUND", 409: "CONFLICT"}.get(exc.status_code, "BAD_REQUEST"), "message": str(exc.detail)}})
 
 @app.exception_handler(RequestValidationError)
 async def validation_error(request: Request, exc: RequestValidationError):
@@ -45,10 +46,17 @@ def create_task(data: TaskInput):
     if not data.goal.strip():
         raise HTTPException(400, "请输入任务目标")
     try:
-        task = store.create(data.goal, data.material, data.source_ids)
+        task, created = store.create_once(data.goal, data.material, data.source_ids, data.client_request_id)
+    except store.RequestConflict as exc:
+        raise HTTPException(409, str(exc)) from None
     except ValueError as exc:
         raise HTTPException(400,str(exc)) from None
-    pool.submit(agent.run, task["id"])
+    if created:
+        try:
+            pool.submit(agent.run, task["id"])
+        except RuntimeError:
+            store.update(task["id"], 'failed', '任务已保存，但执行服务不可用；请稍后新建任务')
+            task = store.get(task["id"])
     return task
 
 @app.get("/api/v1/tasks")
@@ -67,6 +75,8 @@ def get_task(tid: str):
     task["original_goal"] = store.original_goal(tid)
     task["review"] = review.get(tid)
     task["sources"] = library.sources(tid)
+    office = library.office(tid)
+    task["artifact_kind"] = office['kind'] if office else 'markdown'
     task["draft"] = store.draft(tid)
     task["usage"] = store.task_usage(tid)
     task["cache_usage"] = store.task_cache_usage(tid)

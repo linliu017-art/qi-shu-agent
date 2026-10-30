@@ -5,6 +5,7 @@ from . import store, library
 from .office import OfficeDocument, export_office
 from .word_export import export_docx
 from .guides import GUIDES
+import re
 
 router=APIRouter(prefix='/api/v1')
 
@@ -95,11 +96,13 @@ def edit_office(tid:str,data:OfficeEdit):
 @router.get('/artifacts')
 def artifact_list(offset:int=Query(0,ge=0),limit:int=Query(30,ge=1,le=100)):
     with store.connection() as db:
-        rows=db.execute("SELECT id,goal,created_at FROM tasks WHERE owner_id='local-user' AND status='completed' ORDER BY created_at DESC LIMIT ? OFFSET ?",(limit,offset)).fetchall()
+        rows=db.execute("SELECT id,goal,result,created_at FROM tasks WHERE owner_id='local-user' AND status='completed' ORDER BY created_at DESC LIMIT ? OFFSET ?",(limit,offset)).fetchall()
     results=[]
     for row in rows:
         office=library.office(row['id'])
-        results.append({'task_id':row['id'],'title':office['title'] if office else row['goal'],'kind':office['kind'] if office else 'markdown','created_at':row['created_at'],'sources':library.sources(row['id'])})
+        heading = re.search(r'^#\s+(.+)$', row['result'], re.MULTILINE)
+        title = office['title'] if office else heading.group(1).strip() if heading else store.original_goal(row['id'])
+        results.append({'task_id':row['id'],'title':title,'kind':office['kind'] if office else 'markdown','created_at':row['created_at'],'sources':library.sources(row['id'])})
     return {'artifacts':results,'offset':offset,'limit':limit}
 
 

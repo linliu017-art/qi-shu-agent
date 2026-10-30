@@ -1,6 +1,7 @@
 import os
 import json
 import sqlite3
+from hashlib import sha256
 from pathlib import Path
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -21,6 +22,7 @@ def init():
         db.execute("CREATE TABLE IF NOT EXISTS task_clarifications (task_id TEXT PRIMARY KEY, questions TEXT NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS task_reviews (task_id TEXT PRIMARY KEY, items TEXT NOT NULL, confirmed_at TEXT)")
         db.execute("CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, goal TEXT NOT NULL, material TEXT NOT NULL, status TEXT NOT NULL, progress TEXT NOT NULL, result TEXT NOT NULL, created_at TEXT NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS task_requests (owner_id TEXT NOT NULL, request_id TEXT NOT NULL, payload_hash TEXT NOT NULL, task_id TEXT NOT NULL, PRIMARY KEY(owner_id, request_id))")
         db.execute("CREATE TABLE IF NOT EXISTS task_context (task_id TEXT PRIMARY KEY, parent_id TEXT NOT NULL, parent_status TEXT NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS usage_records (task_id TEXT NOT NULL, input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS usage_cache_records (usage_id INTEGER PRIMARY KEY, hit_tokens INTEGER NOT NULL, miss_tokens INTEGER NOT NULL)")
@@ -31,12 +33,33 @@ def init():
 
 
 def create(goal, material, source_ids=None):
+    return create_once(goal, material, source_ids)[0]
+
+
+class RequestConflict(ValueError):
+    pass
+
+
+def create_once(goal, material, source_ids=None, request_id=None):
+    """Atomically bind a retry key to a task; only the creator may schedule it."""
+    source_ids = source_ids or []
+    digest = sha256(json.dumps([goal, material, source_ids], ensure_ascii=False).encode()).hexdigest()
     tid = uuid4().hex
     with connection() as db:
+        db.execute("BEGIN IMMEDIATE")
+        if request_id:
+            row = db.execute("SELECT payload_hash,task_id FROM task_requests WHERE owner_id=? AND request_id=?", ("local-user", request_id)).fetchone()
+            if row:
+                if row['payload_hash'] != digest:
+                    raise RequestConflict('该提交标识已用于另一份任务，请重新发起任务')
+                task = db.execute("SELECT * FROM tasks WHERE id=? AND owner_id=?", (row['task_id'], "local-user")).fetchone()
+                return dict(task), False
         db.execute("INSERT INTO tasks VALUES (?,?,?,?,?,?,?,?)", (tid, "local-user", goal, material, "queued", "等待执行", "", datetime.now(timezone.utc).isoformat()))
         from . import library
-        library.bind(db,tid,source_ids or [])
-    return get(tid)
+        library.bind(db,tid,source_ids)
+        if request_id:
+            db.execute("INSERT INTO task_requests VALUES (?,?,?,?)", ("local-user", request_id, digest, tid))
+    return get(tid), True
 
 
 def get(tid):
