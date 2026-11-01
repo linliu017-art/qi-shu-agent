@@ -186,6 +186,27 @@ def compact_messages(messages):
     return [message for i, message in enumerate(messages) if i >= cutoff or message.get("role") in ("system", "user")]
 
 
+def compact_for_budget(messages):
+    """Keep instructions and the latest complete tool exchange; old data can be reread."""
+    assistants = [i for i, message in enumerate(messages) if message.get("role") == "assistant"]
+    if not assistants:
+        return messages
+    cutoff = assistants[-1]
+    return [message for i, message in enumerate(messages) if i >= cutoff or message.get("role") in ("system", "user")]
+
+
+def compact_tool_schemas(tools):
+    """Drop only JSON Schema annotations; retain every tool and validation constraint."""
+    def strip(value):
+        if isinstance(value, dict):
+            return {k: ({name: strip(schema) for name, schema in v.items()} if k in ("properties", "$defs", "patternProperties") and isinstance(v, dict) else strip(v))
+                    for k, v in value.items() if k not in ("title", "default", "description", "examples")}
+        if isinstance(value, list):
+            return [strip(v) for v in value]
+        return value
+    return [{**tool, "function": {**tool["function"], "parameters": strip(tool["function"]["parameters"])}} for tool in tools]
+
+
 
 
 def clarification_memory(history):
@@ -309,10 +330,14 @@ def run(tid):
                     messages.append({"role": "user", "content": correction["content"]})
                     last_correction = correction["id"]
                 # Preserve the request prefix for cache reuse until compaction is needed.
-                if len(json.dumps(messages, ensure_ascii=False).encode("utf-8")) > 12000:
+                if len(json.dumps(messages, ensure_ascii=False).encode("utf-8")) > len(prompt.encode("utf-8")) + 6000:
                     messages = compact_messages(messages)
                 request_input = {"model": model, "messages": messages, "tools": TOOLS + OFFICE_TOOLS}
                 estimated_input = len(json.dumps(request_input, ensure_ascii=False).encode("utf-8")) + 2048
+                if input_used + estimated_input > 50000:
+                    messages = compact_for_budget(messages)
+                    request_input = {"model": model, "messages": messages, "tools": compact_tool_schemas(TOOLS + OFFICE_TOOLS)}
+                    estimated_input = len(json.dumps(request_input, ensure_ascii=False).encode("utf-8")) + 2048
                 remaining_output = 10000 - output_used
                 if input_used + estimated_input > 50000 or remaining_output < 1:
                     store.update(tid, "failed", "达到本任务模型用量限制，未完成")

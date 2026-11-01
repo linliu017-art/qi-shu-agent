@@ -351,4 +351,5 @@ def restore(tid, source_id):
         from . import library
         library.inherit(db,source_id,new_id)
         db.execute('INSERT INTO office_artifacts SELECT ?,document FROM office_artifacts WHERE task_id=?',(new_id,source_id))
+        db.execute('INSERT INTO native_office_artifacts SELECT ?,kind,sha256,content FROM native_office_artifacts WHERE task_id=?',(new_id,source_id))
     return get(new_id)

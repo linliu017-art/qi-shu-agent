@@ -1,0 +1,54 @@
+"use client";
+import {useEffect,useRef,useState,type FormEvent} from "react";
+import {ApiError,jsonBody,request,taskData,type Task} from "./lib/client";
+import {columnName,officeData,updateCell,updateSlide,appendRow,removeRow,appendColumn,removeColumn,sheetWidth,numericPositions,removeNumericPosition,addSlide,removeSlide,moveSlide,type Cell,type OfficeDocument} from "./lib/office";
+import {ErrorNotice} from "./materials";
+import RichEditor from "./rich-editor";
+
+type Draft={kind:'markdown';content:string}|{kind:'office';document:OfficeDocument;numericCells?:string[]};
+export default function ArtifactEditor({task,onSaved,onClose}:{task:Task;onSaved:(id:string)=>void;onClose:()=>void}){
+ const [draft,setDraft]=useState<Draft|null>(null);const [storageOk,setStorageOk]=useState(true);const [baseline,setBaseline]=useState('');const [error,setError]=useState('');const [busy,setBusy]=useState(false);const [sheet,setSheet]=useState(0);const [page,setPage]=useState(0);const [column,setColumn]=useState(0);const lock=useRef(false);const errorRef=useRef<HTMLDivElement>(null);
+ const key=`qi-shu-editor-v1:${task.id}`;
+ useEffect(()=>{
+  const controller=new AbortController();
+  async function load(){try{
+   const initial:Draft=task.artifact_kind==='xlsx'||task.artifact_kind==='pptx'?{kind:'office',document:await request(`/tasks/${task.id}/office`,officeData,{signal:controller.signal})}:{kind:'markdown',content:task.result};
+   if(initial.kind==='office')initial.numericCells=numericPositions(initial.document);const baselineJSON=JSON.stringify(initial);let recovered:Draft=initial;
+   try{const stored=localStorage.getItem(key);if(stored){const parsed=JSON.parse(stored);if(parsed.kind==='markdown'&&initial.kind==='markdown'&&typeof parsed.content==='string')recovered={kind:'markdown',content:parsed.content};else if(parsed.kind==='office'&&initial.kind==='office'){const document=officeData({document:parsed.document});if(document.kind===initial.document.kind){const stored=Array.isArray(parsed.numericCells)&&parsed.numericCells.every((v:unknown)=>typeof v==='string'&&/^\d+:\d+:\d+$/.test(v))?parsed.numericCells:initial.numericCells||[];recovered={kind:'office',document,numericCells:[...new Set([...stored,...numericPositions(document)])] as string[]}}}}}catch{if(!controller.signal.aborted){setStorageOk(false);setError('无法读取本机编辑草稿，请检查浏览器存储设置。')}}
+   if(!controller.signal.aborted){setBaseline(baselineJSON);setDraft(recovered)}
+  }catch(e){if(!controller.signal.aborted)setError(e instanceof Error?e.message:'无法读取成果') }}
+  void load();return()=>controller.abort();
+ },[task.id,task.result,task.artifact_kind,key]);
+ useEffect(()=>{if(error&&draft)requestAnimationFrame(()=>errorRef.current?.scrollIntoView({block:'nearest'}))},[error,draft]);
+ function change(next:Draft){setDraft(next);try{localStorage.setItem(key,JSON.stringify(next));setStorageOk(true);setError('')}catch{setStorageOk(false);setError('无法保存本地编辑草稿，请检查浏览器存储；离开页面前请先复制修改内容。')}}
+ function exit(){if(busy)return;if(!storageOk&&draft&&JSON.stringify(draft)!==baseline&&!window.confirm('本机暂存失败，退出可能丢失未保存修改。是否退出？'))return;onClose()}
+ function close(){if(busy)return;if(draft&&JSON.stringify(draft)!==baseline&&!window.confirm('放弃当前未保存的修改？'))return;try{localStorage.removeItem(key)}catch{}onClose()}
+ async function save(event:FormEvent){event.preventDefault();if(!draft||lock.current)return;if(draft.kind==='markdown'&&(!draft.content.trim()||draft.content.length>100000)){setError(draft.content.trim()?'正文不能超过10万字符':'正文不能为空');return}lock.current=true;setBusy(true);setError('');
+  try{const path=draft.kind==='markdown'?`/tasks/${task.id}/edit`:`/tasks/${task.id}/office/edit`;const payload=draft.kind==='markdown'?{expected_version_id:task.id,content:draft.content}:{expected_version_id:task.id,document:draft.document};const result=await request(path,taskData,jsonBody(payload));try{localStorage.removeItem(key)}catch{}onSaved(result.id)}catch(e){setError(e instanceof ApiError&&e.status===409?'此成果已有新版本，当前修改已保留。请先查看版本记录，确认后再处理。':`${e instanceof Error?e.message:'保存失败'}。请先核对版本记录；如果本机草稿保存失败，请复制修改内容。`)}finally{lock.current=false;setBusy(false)}
+ }
+ const document=draft?.kind==='office'?draft.document:null;
+ const currentSheet=document?.kind==='xlsx'?document.sheets[sheet]:null;
+ const numericCells=new Set(draft?.kind==='office'?draft.numericCells||[]:[]);
+ function officeChange(next:OfficeDocument,keys?:string[]){if(draft?.kind==='office')change({...draft,document:next,numericCells:keys||draft.numericCells||[]})}
+ function cellChange(row:number,column:number,value:Cell){if(document)officeChange(updateCell(document,sheet,row,column,value))}
+ function rowDelete(index:number){if(!document||!currentSheet||currentSheet.rows.length<=1)return;if(!window.confirm(`删除第 ${index+1} 行？该行内容将从新版本移除，原版本保留。`))return;officeChange(removeRow(document,sheet,index),removeNumericPosition([...numericCells],sheet,'row',index));setPage(Math.min(page,Math.floor((currentSheet.rows.length-2)/20)))}
+ function columnDelete(){if(!document||!currentSheet||sheetWidth(currentSheet)<=1)return;if(!window.confirm(`删除 ${columnName(column)} 列？该列内容将从新版本移除，原版本保留。`))return;officeChange(removeColumn(document,sheet,column),removeNumericPosition([...numericCells],sheet,'column',column));setColumn(Math.max(0,Math.min(column,sheetWidth(currentSheet)-2)))}
+ function slideDelete(index:number){if(!document||document.slides.length<=1)return;if(!window.confirm(`删除第 ${index+1} 页？该页内容将从新版本移除，原版本保留。`))return;officeChange(removeSlide(document,index))}
+
+ return <form className="artifact-editor" onSubmit={save} aria-label="直接编辑成果">
+  <div className="editor-heading"><div><h3>直接编辑成果</h3><p className="note">修改会暂存在本机浏览器；点击“保存为新版本”才会更新成果，不调用模型。</p></div></div>
+  {!draft&&error&&<ErrorNotice message={error}/>}
+  {!draft?<p role="status">{error?'读取失败，请关闭后重试。':'正在读取成果…'}</p>:<fieldset disabled={busy} className="editor-fields">
+   {draft.kind==='markdown'?<RichEditor content={draft.content} disabled={busy} onChange={content=>change({kind:'markdown',content})}/>:document&&<>
+    <label htmlFor="office-title">成果名称</label><input id="office-title" maxLength={100} required value={document.title} onChange={e=>officeChange({...document,title:e.target.value})}/>
+    {document.kind==='xlsx'&&currentSheet&&<><p className="note">可修改单元格、在末尾新增行列，或删除指定行列。公式样式内容按文字保存，不会计算。</p><label htmlFor="sheet-select">工作表</label><select id="sheet-select" value={sheet} onChange={e=>{setSheet(Number(e.target.value));setPage(0);setColumn(0)}}>{document.sheets.map((s,i)=><option key={i} value={i}>{s.name}</option>)}</select>
+    <div className="structure-actions"><button type="button" disabled={currentSheet.rows.length>=1000} onClick={()=>{officeChange(appendRow(document,sheet));setPage(Math.floor(currentSheet.rows.length/20))}}>＋ 新增行</button><button type="button" disabled={sheetWidth(currentSheet)>=50} onClick={()=>officeChange(appendColumn(document,sheet))}>＋ 新增列</button><label htmlFor="column-delete">选择列</label><select id="column-delete" value={column} disabled={sheetWidth(currentSheet)<=1} onChange={e=>setColumn(Number(e.target.value))}>{Array.from({length:sheetWidth(currentSheet)},(_,i)=><option value={i} key={i}>{columnName(i)} 列</option>)}</select><button type="button" disabled={sheetWidth(currentSheet)<=1} onClick={columnDelete}>删除所选列</button></div>
+    <div className="editor-table-scroll"><table className="editor-table"><thead><tr><th>行</th>{Array.from({length:sheetWidth(currentSheet)},(_,i)=><th key={i}>{columnName(i)}</th>)}</tr></thead><tbody>{currentSheet.rows.slice(page*20,page*20+20).map((row,r)=><tr key={r}><th><span>{page*20+r+1}</span><button type="button" className="row-delete" aria-label={`删除第 ${page*20+r+1} 行`} title="删除此行" disabled={currentSheet.rows.length<=1} onClick={()=>rowDelete(page*20+r)}>×</button></th>{Array.from({length:sheetWidth(currentSheet)},(_,c)=>{const value=row[c]??null;const numeric=typeof value==='number'||numericCells.has(`${sheet}:${page*20+r}:${c}`);return <td key={c}>{typeof value==='boolean'?<select aria-label={`${columnName(c)}${page*20+r+1}`} value={String(value)} onChange={e=>cellChange(page*20+r,c,e.target.value==='true')}><option value="true">真</option><option value="false">假</option></select>:<input aria-label={`${columnName(c)}${page*20+r+1}`} type={numeric?'number':'text'} step={numeric?'any':undefined} maxLength={numeric?undefined:5000} value={value===null?'':String(value)} onChange={e=>{const v=e.target.value;cellChange(page*20+r,c,numeric?(v===''?null:Number(v)):v)}}/>}</td>})}</tr>)}</tbody></table></div><div className="pagination"><button type="button" disabled={page===0} onClick={()=>setPage(v=>v-1)}>上一组</button><span>第 {page*20+1}–{Math.min((page+1)*20,currentSheet.rows.length)} 行，共 {currentSheet.rows.length} 行</span><button type="button" disabled={(page+1)*20>=currentSheet.rows.length} onClick={()=>setPage(v=>v+1)}>下一组</button></div></>}
+    {document.kind==='pptx'&&<><p className="note">可编辑已有页面、添加新页或调整顺序；导出PPT不保留复杂原始版式。</p>{document.slides.map((slide,i)=><section className="slide-editor" key={i}><div className="slide-heading"><h4>第 {i+1} 页</h4><div className="actions"><button type="button" aria-label={`上移第 ${i+1} 页`} disabled={i===0} onClick={()=>officeChange(moveSlide(document,i,-1))}>上移</button><button type="button" aria-label={`下移第 ${i+1} 页`} disabled={i===document.slides.length-1} onClick={()=>officeChange(moveSlide(document,i,1))}>下移</button><button type="button" aria-label={`删除第 ${i+1} 页`} disabled={document.slides.length<=1} onClick={()=>slideDelete(i)}>删除</button></div></div><label htmlFor={`slide-title-${i}`}>标题</label><input id={`slide-title-${i}`} required maxLength={50} value={slide.title} onChange={e=>officeChange(updateSlide(document,i,'title',e.target.value))}/>{slide.body.map((line,j)=><div key={j}><label htmlFor={`slide-${i}-line-${j}`}>正文 {j+1}</label><input id={`slide-${i}-line-${j}`} required maxLength={100} value={line} onChange={e=>officeChange(updateSlide(document,i,'body',e.target.value,j))}/></div>)}</section>)}<button type="button" disabled={document.slides.length>=30} onClick={()=>{officeChange(addSlide(document));requestAnimationFrame(()=>window.document.getElementById(`slide-title-${document.slides.length}`)?.focus())}}>＋ 新增页面</button></>}
+
+   </>}
+  </fieldset>}
+  {draft&&error&&<div ref={errorRef}><ErrorNotice message={error}/></div>}
+  <div className="editor-actions"><span className="note">{draft&&JSON.stringify(draft)!==baseline?(storageOk?"未保存为成果 · 草稿已暂存在本机":"未保存 · 本机暂存失败"):"没有未保存的修改"}</span><div className="actions"><button type="button" disabled={busy} onClick={exit}>退出编辑</button><button type="button" disabled={busy} onClick={close}>放弃修改</button><button type="submit" className="primary" disabled={!draft||busy||JSON.stringify(draft)===baseline}>{busy?'正在保存…':'保存为新版本'}</button></div></div>
+ </form>
+}

@@ -10,7 +10,7 @@ export function SourceDialog({source,onClose}:{source:Source;onClose:()=>void}){
  useEffect(()=>{const dialog=ref.current;dialog?.showModal();return()=>dialog?.close()},[]);
  return <dialog ref={ref} className="source-dialog" onCancel={onClose} onClose={onClose} aria-labelledby="source-title">
   <header className="panel-heading"><div><span className="eyebrow">参考资料 · 已保存版本</span><h2 id="source-title">{source.name}</h2></div><button type="button" onClick={onClose} aria-label="关闭资料预览">关闭</button></header>
-  <div className="dialog-scroll"><p className="note">这是提取文字，保留可用的段落、表格或幻灯片位置；原始版式请下载原件查看。</p><p className="note">版本 {source.id.slice(0,8)} · {source.kind.toUpperCase()}</p>
+  <div className="dialog-scroll"><p className="note">这是可提取的正文与表格文字；图片、页眉页脚、演讲者备注和图表本身不会读取，Excel 公式不计算。内容可能不完整，请下载原件核对。</p><p className="note">版本 {source.id.slice(0,8)} · {source.kind.toUpperCase()}</p>
    {resource.error&&<ErrorNotice message={resource.error} retry={resource.reload}/>}
    {resource.loading?<p role="status">正在读取资料…</p>:resource.data&&<><p className="note">字符 {resource.data.offset+1}–{resource.data.offset+resource.data.text.length} / {resource.data.total_characters}</p><pre className="source-text">{resource.data.text}</pre></>}
   </div><footer className="panel-footer"><div className="actions"><button type="button" disabled={offset===0||resource.loading} onClick={()=>setOffset(Math.max(0,offset-3000))}>上一段</button><button type="button" disabled={resource.loading||resource.data?.next_offset==null} onClick={()=>setOffset(resource.data!.next_offset!)}>下一段</button></div><a className="button secondary" href={`/api/v1/materials/${source.id}/download`} download>下载原件</a></footer>
@@ -27,7 +27,7 @@ export function MaterialLibrary({selected,onToggle,onPreview,onUploaded,compact=
  }
  return <section className={compact?"material-picker":"library-content"} aria-label="资料列表">
   <div className="section-title"><div><h2>{compact?"选择参考资料":"你的资料"}</h2><p className="note">{compact?`已选择 ${selected.length}/10 份，锁定当前版本` : "上传原件，随时预览；勾选后可带入新任务。"}</p></div><label className={`button secondary upload-button${uploading?" disabled":""}`}>{uploading?"正在上传…":"＋ 上传资料"}<input type="file" aria-label="上传资料" disabled={uploading} accept=".txt,.md,.docx,.xlsx,.pptx" onChange={event=>{void upload(event.target.files?.[0]);event.target.value=""}}/></label></div>
-  <p className="note">支持 TXT / MD / Word / Excel / PPT，单份 10 MB，提取文字最多 20 万字符。请先使用虚构或脱敏资料。</p>
+  <p className="note">支持 TXT / MD / Word / Excel / PPT，单份 10 MB，提取文字最多 20 万字符。图片、页眉页脚、演讲者备注和图表本身不读取，Excel 公式不计算；请使用虚构或脱敏资料。</p>
   {error&&<ErrorNotice message={error}/>}{notice&&<p className="success" role="status">{notice}{selected.length>=10?"；最多选10份，可先移除其他资料。":""}</p>}
   {resource.error&&<ErrorNotice message={resource.error} retry={resource.reload}/>}
   {resource.loading?<p className="loading" role="status">正在读取资料列表…</p>:resource.data?.length===0&&!resource.error?<div className="empty compact material-empty"><span className="empty-mark" aria-hidden="true">▤</span><div><h3>还没有资料</h3><p>可上传参考文件，也可以直接描述目标开始任务。</p></div></div>:<div className="material-rows">{resource.data?.map(source=><div className="material-row" key={source.id}>

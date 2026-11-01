@@ -76,7 +76,9 @@ def get_task(tid: str):
     task["review"] = review.get(tid)
     task["sources"] = library.sources(tid)
     office = library.office(tid)
-    task["artifact_kind"] = office['kind'] if office else 'markdown'
+    native = library.native_office_info(tid)
+    task["native_office"] = bool(native)
+    task["artifact_kind"] = native['kind'] if native else office['kind'] if office else 'markdown'
     task["draft"] = store.draft(tid)
     task["usage"] = store.task_usage(tid)
     task["cache_usage"] = store.task_cache_usage(tid)
@@ -95,6 +97,8 @@ def correct_task(tid: str, data: CorrectionInput):
     task = store.get(tid)
     if not task:
         raise HTTPException(404, "任务不存在")
+    if library.native_office_info(tid):
+        raise HTTPException(409, '复杂 Office 成果暂不支持对话修改，请使用原文件编辑器')
     content = data.content.strip()
     if not content:
         raise HTTPException(400, "请输入补充要求")
@@ -146,6 +150,8 @@ def task_diff(tid: str, base_id: str):
     task = completed_task(tid)
     if base_id not in {v['id'] for v in store.versions(tid)}:
         raise HTTPException(409, '只能比较同一成果的已完成版本')
+    if library.native_office_info(tid) or library.native_office_info(base_id):
+        raise HTTPException(409, '复杂 Office 版本暂不支持文本差异对比，请下载原文件查看')
     before = completed_task(base_id)['result'].splitlines()
     after = task['result'].splitlines()
     changes = []
@@ -178,6 +184,8 @@ def export_word(tid: str):
 
 from .library_api import router as library_router
 app.include_router(library_router)
+from .office_api import router as office_editor_router
+app.include_router(office_editor_router)
 
 
 class ConfirmReviewInput(BaseModel):

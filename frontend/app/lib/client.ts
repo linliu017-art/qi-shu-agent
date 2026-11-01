@@ -1,7 +1,7 @@
 export type Source = {id:string; name:string; kind:string; sha256:string; parent_id:string|null; created_at:string};
-export type Task = {id:string; goal:string; original_goal?:string; material:string; status:string; progress:string; result:string; artifact_kind?:string; sources?:Source[]; draft?:{position:number;title:string;content:string|null}[]|null; usage?:{input_tokens:number;output_tokens:number}; cache_usage?:{calls:number;reported_calls:number;hit_tokens:number|null;miss_tokens:number|null}};
+export type Task = {id:string; goal:string; original_goal?:string; material:string; status:string; progress:string; result:string; artifact_kind?:string; native_office?:boolean; sources?:Source[]; draft?:{position:number;title:string;content:string|null}[]|null; usage?:{input_tokens:number;output_tokens:number}; cache_usage?:{calls:number;reported_calls:number;hit_tokens:number|null;miss_tokens:number|null}};
 export type Summary = {id:string;goal:string;status:string};
-export type Artifact = {task_id:string;title:string;kind:string;created_at:string;sources:Source[]};
+export type Artifact = {task_id:string;title:string;kind:string;created_at:string;sources:Source[];version?:number;version_count?:number};
 export type Preview = Source & {text:string;offset:number;next_offset:number|null;total_characters:number};
 export const labels:Record<string,string>={queued:"等待执行",running:"执行中",completed:"生成已完成",failed:"未完成",cancelled:"已停止",interrupted:"已中断",waiting:"等待补充"};
 export const isActive=(status:string)=>["queued","running"].includes(status);

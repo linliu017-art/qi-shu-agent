@@ -71,3 +71,17 @@ def test_word_export_structure(tmp_path, monkeypatch):
             text = ''.join(xml.itertext())
             assert '预算' in text and '未确定' in text and '明确事实' in text
             assert not any('vba' in name.lower() for name in archive.namelist())
+
+
+def test_artifact_cards_include_versions_without_hiding_history(tmp_path, monkeypatch):
+    monkeypatch.setenv('AGENT_DB_PATH', str(tmp_path/'versions.sqlite'))
+    with TestClient(app) as client:
+        root=completed()
+        child=store.create_followup(root,'修改')['id']
+        store.update(child,'running','处理中')
+        assert store.finish(child,'新版本',0)
+        unrelated=completed('另一成果')
+        cards={item['task_id']:item for item in client.get('/api/v1/artifacts').json()['artifacts']}
+        assert (cards[root]['version'],cards[root]['version_count'])==(1,2)
+        assert (cards[child]['version'],cards[child]['version_count'])==(2,2)
+        assert (cards[unrelated]['version'],cards[unrelated]['version_count'])==(1,1)

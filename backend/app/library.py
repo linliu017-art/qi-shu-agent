@@ -20,9 +20,13 @@ def init(db):
     db.execute('CREATE TABLE IF NOT EXISTS materials (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL, sha256 TEXT NOT NULL, parent_id TEXT, created_at TEXT NOT NULL, content BLOB NOT NULL, text TEXT NOT NULL)')
     db.execute('CREATE TABLE IF NOT EXISTS task_sources (task_id TEXT NOT NULL, source_id TEXT NOT NULL, PRIMARY KEY(task_id,source_id))')
     db.execute('CREATE TABLE IF NOT EXISTS office_artifacts (task_id TEXT PRIMARY KEY, document TEXT NOT NULL)')
+    db.execute('CREATE TABLE IF NOT EXISTS native_office_artifacts (task_id TEXT PRIMARY KEY, kind TEXT NOT NULL, sha256 TEXT NOT NULL, content BLOB NOT NULL)')
+    db.execute('CREATE TABLE IF NOT EXISTS native_office_sessions (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, base_id TEXT NOT NULL, kind TEXT NOT NULL, snapshot BLOB NOT NULL, snapshot_hash TEXT NOT NULL, status TEXT NOT NULL, result_id TEXT, result_hash TEXT, recovery BLOB, created_at TEXT NOT NULL)')
+    if 'review_details' not in {row['name'] for row in db.execute('PRAGMA table_info(native_office_sessions)')}:
+        db.execute("ALTER TABLE native_office_sessions ADD COLUMN review_details TEXT")
 
 
-def inspect_file(name, raw):
+def inspect_file(name, raw, *, allow_empty=False):
     name=re.sub(r'[\x00-\x1f\x7f]', '', name.replace('\\','/').split('/')[-1])[:160]
     if not name or not raw or len(raw)>MAX_BYTES:
         raise ValueError('文件不能为空，且不能超过10MB')
@@ -69,21 +73,28 @@ def inspect_file(name, raw):
             pnum=tnum=0
             for block in doc.element.body:
                 if block.tag.endswith('}p'):
-                    pnum+=1;parts.append(f'[段落{pnum}] '+Paragraph(block,doc).text)
+                    pnum+=1
+                    content=Paragraph(block,doc).text
+                    if content.strip(): parts.append(f'[段落{pnum}] '+content)
                 elif block.tag.endswith('}tbl'):
                     tnum+=1
                     for i,row in enumerate(Table(block,doc).rows,1):
-                        parts.append(f'[表格{tnum} 行{i}] '+' | '.join(c.text for c in row.cells))
+                        values=[c.text for c in row.cells]
+                        if any(value.strip() for value in values): parts.append(f'[表格{tnum} 行{i}] '+' | '.join(values))
         elif kind=='xlsx':
             book=load_workbook(BytesIO(raw),read_only=True,data_only=False,keep_links=False)
             try:
                 if len(book.worksheets)>20: raise ValueError('最多支持20个工作表')
                 for sheet in book:
-                    if sheet.max_row>10000 or sheet.max_column>100: raise ValueError('表格超过10000行或100列')
-                    for row in sheet:
+                    # Some valid XLSX writers omit the optional dimension tag;
+                    # openpyxl then reports None rather than a numeric maximum.
+                    if (sheet.max_row is not None and sheet.max_row>10000) or (sheet.max_column is not None and sheet.max_column>100):
+                        raise ValueError('表格超过10000行或100列')
+                    for row_number,row in enumerate(sheet,1):
+                        if row_number>10000 or len(row)>100:raise ValueError('表格超过10000行或100列')
                         values=[]
                         for cell in row:
-                            if cell.value is not None:
+                            if cell.value is not None and str(cell.value).strip():
                                 value=str(cell.value)
                                 values.append(f'{cell.coordinate}='+ ('[公式，未计算] ' if cell.data_type=='f' else '')+value)
                         if values: parts.append(f'[工作表 {sheet.title}] '+' | '.join(values))
@@ -93,11 +104,14 @@ def inspect_file(name, raw):
             if len(deck.slides)>100: raise ValueError('最多支持100页幻灯片')
             for i,slide in enumerate(deck.slides,1):
                 for shape in slide.shapes:
-                    if shape.has_text_frame: parts.append(f'[幻灯片{i}] '+shape.text)
+                    if shape.has_text_frame:
+                        if shape.text.strip(): parts.append(f'[幻灯片{i}] '+shape.text)
                     elif shape.has_table:
-                        for row in shape.table.rows: parts.append(f'[幻灯片{i} 表格] '+' | '.join(c.text for c in row.cells))
+                        for row in shape.table.rows:
+                            values=[c.text for c in row.cells]
+                            if any(value.strip() for value in values): parts.append(f'[幻灯片{i} 表格] '+' | '.join(values))
     text='\n'.join(parts)
-    if not text.strip(): raise ValueError('文件没有可提取的文字，不支持图片文字识别')
+    if not text.strip() and not allow_empty: raise ValueError('文件没有可提取的文字，不支持图片文字识别')
     if len(text)>200000: raise ValueError('提取文本超过20万字符，请拆分文件')
     return name,kind,text
 
@@ -182,6 +196,8 @@ def edit(tid,expected,content=None,document=None):
         row=db.execute("SELECT * FROM tasks WHERE id=? AND owner_id='local-user' AND status='completed'",(tid,)).fetchone()
         if not row or db.execute('SELECT 1 FROM task_context WHERE parent_id=?',(tid,)).fetchone():
             raise ValueError('该版本已有后续任务，请刷新后编辑')
+        if db.execute('SELECT 1 FROM native_office_artifacts WHERE task_id=?',(tid,)).fetchone():
+            raise ValueError('复杂办公成果须通过原文件编辑，不能使用简化编辑')
         existing=db.execute('SELECT document FROM office_artifacts WHERE task_id=?',(tid,)).fetchone()
         if bool(existing)!=bool(document): raise ValueError('请使用与原成果类型对应的编辑接口')
         if existing and json.loads(existing[0])['kind']!=document.kind: raise ValueError('不能通过编辑更换成果格式')
@@ -191,3 +207,94 @@ def edit(tid,expected,content=None,document=None):
         inherit(db,tid,new_id)
         if document: db.execute('INSERT INTO office_artifacts VALUES (?,?)',(new_id,document.model_dump_json()))
     return store.get(new_id)
+
+
+def native_office(tid):
+    """Read the immutable native Office bytes of an owned task version."""
+    with store.connection() as db:
+        row=db.execute("SELECT n.kind,n.sha256,n.content FROM native_office_artifacts n JOIN tasks t ON t.id=n.task_id WHERE t.id=? AND t.owner_id='local-user' AND t.status='completed'",(tid,)).fetchone()
+        return dict(row) if row else None
+
+
+def native_office_info(tid):
+    """Get native Office metadata without loading file bytes into memory."""
+    with store.connection() as db:
+        row=db.execute("SELECT n.kind,n.sha256 FROM native_office_artifacts n JOIN tasks t ON t.id=n.task_id WHERE t.id=? AND t.owner_id='local-user' AND t.status='completed'",(tid,)).fetchone()
+        return dict(row) if row else None
+
+
+def import_native_office(name, raw):
+    """Create an immutable original and its first editable task atomically."""
+    name,kind,text=inspect_file(name,raw,allow_empty=True)
+    if kind not in ('docx','xlsx','pptx'):
+        raise ValueError('仅支持Word、Excel和PPT原文件')
+    sid,tid=uuid4().hex,uuid4().hex
+    now=datetime.now(timezone.utc).isoformat();digest=sha256(raw).hexdigest()
+    summary='# 原文件编辑成果\n\n'+(text[:95000] if text.strip() else '文件没有可提取的正文，内容请在原文件编辑器中查看。')
+    with store.connection() as db:
+        db.execute('BEGIN IMMEDIATE')
+        db.execute('INSERT INTO materials VALUES (?,?,?,?,?,?,?,?,?)',(sid,'local-user',name,kind,digest,None,now,raw,text))
+        db.execute('INSERT INTO tasks VALUES (?,?,?,?,?,?,?,?)',(tid,'local-user','编辑原文件：'+name,'','completed','原文件已保存',summary,now))
+        db.execute('INSERT INTO task_sources VALUES (?,?)',(tid,sid))
+        db.execute('INSERT INTO native_office_artifacts VALUES (?,?,?,?)',(tid,kind,digest,raw))
+    return store.get(tid)
+
+
+def _save_native_tx(db, tid, expected, kind, raw, text):
+    """Save a native version inside the caller's existing write transaction."""
+    family=store.versions(tid)
+    if not family or tid!=expected or family[-1]['id']!=expected:
+        raise ValueError('版本已变化，请刷新最新版本后编辑')
+    row=db.execute("SELECT * FROM tasks WHERE id=? AND owner_id='local-user' AND status='completed'",(tid,)).fetchone()
+    if not row or db.execute('SELECT 1 FROM task_context WHERE parent_id=?',(tid,)).fetchone():
+        raise ValueError('该版本已有后续任务，请刷新后编辑')
+    native=db.execute('SELECT kind FROM native_office_artifacts WHERE task_id=?',(tid,)).fetchone()
+    structured=db.execute('SELECT document FROM office_artifacts WHERE task_id=?',(tid,)).fetchone()
+    previous_kind=native['kind'] if native else json.loads(structured['document'])['kind'] if structured else 'docx'
+    if kind!=previous_kind:
+        raise ValueError('不能通过编辑更换成果格式')
+    digest=sha256(raw).hexdigest();new_id=uuid4().hex
+    summary='# 原文件编辑成果\n\n'+(text[:95000] if text.strip() else '文件没有可提取的正文，内容请在原文件编辑器中查看。')
+    db.execute('INSERT INTO tasks VALUES (?,?,?,?,?,?,?,?)',(new_id,'local-user','用户直接编辑原文件，以本版本为准',row['material'],'completed','原文件已保存为新版本',summary,datetime.now(timezone.utc).isoformat()))
+    db.execute('INSERT INTO task_context VALUES (?,?,?)',(new_id,tid,'completed'))
+    inherit(db,tid,new_id)
+    db.execute('INSERT INTO native_office_artifacts VALUES (?,?,?,?)',(new_id,kind,digest,raw))
+    return new_id
+
+
+def save_native_version(tid, expected, name, raw):
+    """Validate and atomically preserve editor-returned bytes as a new version.
+
+    This is a storage primitive, not an editor endpoint. The integration must
+    validate editor callbacks, sessions and user authorization separately.
+    """
+    _,kind,text=inspect_file(name,raw,allow_empty=True)
+    if kind not in ('docx','xlsx','pptx'):
+        raise ValueError('仅支持Word、Excel和PPT原文件')
+    with store.connection() as db:
+        db.execute('BEGIN IMMEDIATE')
+        new_id=_save_native_tx(db,tid,expected,kind,raw,text)
+    return store.get(new_id)
+
+
+def prepare_native_editor_file(tid):
+    """Build a local editor input without modifying any existing task version."""
+    task=store.get(tid)
+    if not task or task['status']!='completed':
+        raise ValueError('仅支持已完成的成果')
+    native=native_office(tid)
+    if native:
+        return native
+    structured=office(tid)
+    if structured:
+        from .office import OfficeDocument,export_office
+        document=OfficeDocument.model_validate(structured)
+        kind=document.kind
+        raw=export_office(document)
+    else:
+        from .word_export import export_docx
+        kind='docx'
+        raw=export_docx(task['result'])
+    # These are local generated files, but still apply the same format/size checks.
+    inspect_file('result.'+kind,raw,allow_empty=True)
+    return {'kind':kind,'sha256':sha256(raw).hexdigest(),'content':raw}

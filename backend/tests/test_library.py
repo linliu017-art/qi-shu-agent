@@ -171,3 +171,32 @@ def test_upload_size_and_api_office_errors(client):
     assert client.get(f'/api/v1/tasks/{tid}/export/exe').status_code==400
     assert client.get('/api/v1/materials',params={'limit':1000}).status_code==422
     assert len(client.get('/api/v1/business-guides').json()['guides'])==7
+
+
+def test_office_empty_or_image_only_is_not_mistaken_for_text(client):
+    from PIL import Image
+    from pptx.util import Inches
+    image=BytesIO();Image.new('RGB',(8,8),'white').save(image,format='PNG');pixels=image.getvalue()
+    word=Document();word.add_picture(BytesIO(pixels));word.add_table(rows=1,cols=2)
+    word_bytes=BytesIO();word.save(word_bytes)
+    deck=Presentation();slide=deck.slides.add_slide(deck.slide_layouts[6]);slide.shapes.add_textbox(Inches(1),Inches(1),Inches(1),Inches(1));slide.shapes.add_table(1,2,Inches(1),Inches(2),Inches(2),Inches(1));slide.shapes.add_picture(BytesIO(pixels),Inches(1),Inches(3))
+    ppt_bytes=BytesIO();deck.save(ppt_bytes)
+    excel=Workbook();excel.active['A1']='   ';excel_bytes=BytesIO();excel.save(excel_bytes)
+    for name,raw in [('image.docx',word_bytes.getvalue()),('image.pptx',ppt_bytes.getvalue()),('blank.xlsx',excel_bytes.getvalue())]:
+        response=client.post('/api/v1/materials',files={'file':(name,raw)})
+        assert response.status_code==400, (name,response.text)
+        assert '没有可提取的文字' in response.json()['error']['message']
+
+
+def test_mixed_office_keeps_real_text_locations_and_original(client):
+    from PIL import Image
+    from pptx.util import Inches
+    image=BytesIO();Image.new('RGB',(8,8),'white').save(image,format='PNG');pixels=image.getvalue()
+    doc=Document();doc.add_picture(BytesIO(pixels));doc.add_paragraph('真实文字');table=doc.add_table(rows=2,cols=2);table.cell(1,0).text='表中资料';word_bytes=BytesIO();doc.save(word_bytes)
+    deck=Presentation();slide=deck.slides.add_slide(deck.slide_layouts[6]);slide.shapes.add_picture(BytesIO(pixels),Inches(1),Inches(1));slide.shapes.add_textbox(Inches(1),Inches(2),Inches(3),Inches(1)).text='幻灯片文字';ppt_bytes=BytesIO();deck.save(ppt_bytes)
+    excel=Workbook();excel.active['A1']='  ';excel.active['A2']=0;excel_bytes=BytesIO();excel.save(excel_bytes)
+    for name,raw,expected in [('mixed.docx',word_bytes.getvalue(),'[段落2] 真实文字'),('mixed.pptx',ppt_bytes.getvalue(),'[幻灯片1] 幻灯片文字'),('zero.xlsx',excel_bytes.getvalue(),'A2=0')]:
+        response=client.post('/api/v1/materials',files={'file':(name,raw)})
+        assert response.status_code==201,(name,response.text)
+        ident=response.json()['id'];assert expected in client.get('/api/v1/materials/'+ident).json()['text']
+        assert client.get('/api/v1/materials/'+ident+'/download').content==raw

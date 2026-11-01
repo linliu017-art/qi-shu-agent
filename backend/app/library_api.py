@@ -81,6 +81,7 @@ def edit_text(tid:str,data:TextEdit):
 @router.get('/tasks/{tid}/office')
 def office_content(tid:str):
     task_or_404(tid)
+    if library.native_office_info(tid): raise HTTPException(409,'请在原文件编辑器中查看复杂办公成果')
     result=library.office(tid)
     if not result: raise HTTPException(404,'该任务没有结构化办公成果')
     return {'task_id':tid,'document':result,'sources':library.sources(tid)}
@@ -100,9 +101,12 @@ def artifact_list(offset:int=Query(0,ge=0),limit:int=Query(30,ge=1,le=100)):
     results=[]
     for row in rows:
         office=library.office(row['id'])
+        native=library.native_office_info(row['id'])
         heading = re.search(r'^#\s+(.+)$', row['result'], re.MULTILINE)
         title = office['title'] if office else heading.group(1).strip() if heading else store.original_goal(row['id'])
-        results.append({'task_id':row['id'],'title':title,'kind':office['kind'] if office else 'markdown','created_at':row['created_at'],'sources':library.sources(row['id'])})
+        family = store.versions(row['id'])
+        version = next((index for index, item in enumerate(family, 1) if item['id'] == row['id']), 1)
+        results.append({'task_id':row['id'],'title':title,'kind':native['kind'] if native else office['kind'] if office else 'markdown','native_office':bool(native),'created_at':row['created_at'],'sources':library.sources(row['id']),'version':version,'version_count':len(family)})
     return {'artifacts':results,'offset':offset,'limit':limit}
 
 
@@ -111,12 +115,15 @@ def export_artifact(tid:str,format:str):
     task=task_or_404(tid)
     if task['status']!='completed': raise HTTPException(409,'仅支持已完成成果')
     office=library.office(tid)
-    if format=='md': data=task['result'].encode();mime='text/markdown; charset=utf-8'
-    elif format=='docx': data=export_docx(task['result']);mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    native=library.native_office(tid)
+    mimes={'docx':'application/vnd.openxmlformats-officedocument.wordprocessingml.document','xlsx':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','pptx':'application/vnd.openxmlformats-officedocument.presentationml.presentation'}
+    if native and format==native['kind']: data=native['content'];mime=mimes[format]
+    elif format=='md': data=task['result'].encode();mime='text/markdown; charset=utf-8'
+    elif format=='docx': data=export_docx(task['result']);mime=mimes['docx']
     elif format in ('xlsx','pptx'):
         if not office or office['kind']!=format: raise HTTPException(409,'成果格式不匹配，请先让Agent生成对应格式')
         data=export_office(OfficeDocument.model_validate(office))
-        mime={'xlsx':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','pptx':'application/vnd.openxmlformats-officedocument.presentationml.presentation'}[format]
+        mime=mimes[format]
     else: raise HTTPException(400,'不支持的导出格式')
     return Response(data,media_type=mime,headers={'Content-Disposition':f'attachment; filename="result.{format}"','Cache-Control':'no-store'})
 
